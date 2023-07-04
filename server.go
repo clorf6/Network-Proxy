@@ -78,7 +78,6 @@ func Connect(client net.Conn) (net.Conn, error) {
 	}
 	port := binary.BigEndian.Uint16(buffer[:2])
 	dest := fmt.Sprintf("%s:%d", addr, port)
-	// fmt.Printf("Connect! %s\n", dest)
 	dst, err := net.DialTimeout("tcp", dest, 3 * time.Second)
 	if (err != nil) {
 		return nil, err
@@ -92,8 +91,8 @@ func Connect(client net.Conn) (net.Conn, error) {
 }
 
 func Request(client, host net.Conn) {
-	go io.Copy(client, host)
 	go io.Copy(host, client)
+	io.Copy(client, host)
 }
 
 func Communicate(client net.Conn) {
@@ -113,14 +112,13 @@ func Communicate(client net.Conn) {
 }
 
 func main() {
-	server, err := net.Listen("tcp", ":1080")
+	server, err := net.Listen("tcp", ":8080")
 	if (err != nil) {
 		fmt.Printf("Listen error: %v\n", err)
 		return 
 	}
 	for {
 		client, err := server.Accept()
-		//fmt.Printf("Accept!\n")
 		if (err != nil) {
 			fmt.Printf("Accept error: %v\n", err)
 			continue
