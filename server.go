@@ -10,22 +10,22 @@ import (
 	"time"
 )
 
-func GetUDPAddr(buffer []byte) string {
+func GetAddr(atyp int, buffer []byte) string {
 	var addr string
 	var port uint16
-	atyp := int(buffer[3])
 	switch atyp {
 		case 1: 
-			addr = fmt.Sprintf("%d.%d.%d.%d", buffer[4], buffer[5], buffer[6], buffer[7])
-			port = binary.BigEndian.Uint16(buffer[8:10])
+			addr = fmt.Sprintf("%d.%d.%d.%d", buffer[0], buffer[1], buffer[2], buffer[3])
+			port = binary.BigEndian.Uint16(buffer[4:6])
 		case 3:
-			addrlen := int(buffer[4])
-			addr = string(buffer[5: 5 + addrlen])
-			port = binary.BigEndian.Uint16(buffer[5 + addrlen:7 + addrlen])
+			addrlen := int(buffer[0])
+			addr = string(buffer[1: 1 + addrlen])
+			port = binary.BigEndian.Uint16(buffer[1 + addrlen:3 + addrlen])
 		case 4:
-			addr = fmt.Sprintf("%02x%02x:%02x%02x:%02x%02x:%02x%02x", 
-			buffer[4], buffer[5], buffer[6], buffer[7], buffer[8], buffer[9], buffer[10], buffer[11])
-			port = binary.BigEndian.Uint16(buffer[12:14])
+			addr = fmt.Sprintf("[%02x%02x:%02x%02x:%02x%02x:%02x%02x:%02x%02x:%02x%02x:%02x%02x:%02x%02x]", 
+			buffer[0], buffer[1], buffer[2], buffer[3], buffer[4], buffer[5], buffer[6], buffer[7], 
+			buffer[8], buffer[9], buffer[10], buffer[11], buffer[12], buffer[13], buffer[14], buffer[15])
+			port = binary.BigEndian.Uint16(buffer[16:18])
 		default:
 			return ""
 	}
@@ -91,7 +91,7 @@ func HandleUDP(LocalConn, RemoteConn *net.UDPConn, dest string) (error) {
 	fmt.Printf("DST %v\n",buffer[:n])
 	fmt.Printf("LocalAddr %v\n", LocalAddr)
 	if (LocalAddr.String() == dest) {
-		RemoteAddr, _ := net.ResolveUDPAddr("udp", GetUDPAddr(buffer))
+		RemoteAddr, _ := net.ResolveUDPAddr("udp", GetAddr(int(buffer[3]), buffer[4:]))
 		fmt.Printf("RemoteAddr %v\n", RemoteAddr)
 		var LocalBuffer []byte = make([]byte, 512)
 		var RemoteBuffer []byte = make([]byte, 512)
@@ -145,21 +145,15 @@ func Connect(client net.Conn) (error) {
 	if (ver != 5) {
 		return errors.New("Invalid version")
 	}
-	var addr string
-	var Addr []byte = make([]byte, 512)
-	var length int = 0
 	switch atyp {
-		case 1: 
-			n, err = io.ReadFull(client, buffer[:4])
-			if (n != 4) {
+		case 1:
+			n, err = io.ReadFull(client, buffer[:6])
+			if (n != 6) {
 				return errors.New("Reading error")
 			}
 			if (err != nil) {
 				return err
 			}
-			copy(Addr, buffer)
-			length = n
-			addr = fmt.Sprintf("%d.%d.%d.%d", buffer[0], buffer[1], buffer[2], buffer[3])
 		case 3:
 			n, err = io.ReadFull(client, buffer[:1])
 			if (n != 1) {
@@ -169,58 +163,31 @@ func Connect(client net.Conn) (error) {
 				return err
 			}
 			addrlen := int(buffer[0])
-			n, err = io.ReadFull(client, buffer[:addrlen])
-			if (n != addrlen) {
+			n, err = io.ReadFull(client, buffer[1:addrlen + 3])
+			if (n != addrlen + 2) {
 				return errors.New("Reading error")
 			}
 			if (err != nil) {
 				return err
 			}
-			copy(Addr[1:], buffer)
-			Addr[0] = byte(addrlen)
-			length = n + 1
-			addr = string(buffer[:addrlen])
 		case 4:
-			n, err = io.ReadFull(client, buffer[:16])
-			if (n != 16) {
+			n, err = io.ReadFull(client, buffer[:18])
+			if (n != 18) {
 				return errors.New("Reading error")
 			}
 			if (err != nil) {
 				return err
 			}
-			copy(Addr, buffer)
-			length = n
-			addr = fmt.Sprintf("[%02x%02x:%02x%02x:%02x%02x:%02x%02x:%02x%02x:%02x%02x:%02x%02x:%02x%02x]", 
-			buffer[0], buffer[1], buffer[2], buffer[3], buffer[4], buffer[5], buffer[6], buffer[7], 
-			buffer[8], buffer[9], buffer[10], buffer[11], buffer[12], buffer[13], buffer[14], buffer[15])
-		default: 
+		default:
 			n, _ = client.Write([]byte{0x05, 0x08, 0x00, 0x01, 0, 0, 0, 0, 0, 0})
 			return errors.New("ATYP is wrong")
-		}
-	n, err = io.ReadFull(client, buffer[:2])
-	if (n != 2) {
-		return errors.New("Reading error")
 	}
-	if (err != nil) {
-		return err
-	}
-	port := binary.BigEndian.Uint16(buffer[:2])
-	var Port []byte = make([]byte, 2)
-	copy(Port[:2], buffer[:2])
-	dest := fmt.Sprintf("%s:%d", addr, port)
-	var Reply []byte = make([]byte, 512)
-	Reply[0] = 0x05
-	Reply[1] = 0x00
-	Reply[2] = 0x00
-	Reply[3] = byte(atyp)
-	copy(Reply[4:], Addr[:length])
-	copy(Reply[(4 + length):], Port)
-	if (cmd < 1 || cmd > 3 ) {
+	dest := GetAddr(atyp, buffer)
+	if (cmd < 1 || cmd > 3) {
 		n, _ = client.Write([]byte{0x05, 0x07, 0x00, 0x01, 0, 0, 0, 0, 0, 0})
 		return errors.New("cmd is wrong")
 	} else if (cmd == 1) {
 		dst, err := net.DialTimeout("tcp", dest, 3 * time.Second)
-		defer dst.Close()
 		if (err != nil) {
 			if strings.Contains(err.Error(), "lookup invalid") {
 				n, _ = client.Write([]byte{0x05, 0x04, 0x00, 0x01, 0, 0, 0, 0, 0, 0})
@@ -231,6 +198,7 @@ func Connect(client net.Conn) (error) {
 			}
 			return err
 		}
+		defer dst.Close()
 		n, err = client.Write([]byte{0x05, 0x00, 0x00, 0x01, 0, 0, 0, 0, 0, 0})
 		if (err != nil) {
 			return err
@@ -249,6 +217,10 @@ func Connect(client net.Conn) (error) {
 		ProxyAddr := LocalConn.LocalAddr().(*net.UDPAddr)
 		fmt.Printf("UDP\n");
 		fmt.Printf("dest %s\n", dest)
+		var Reply []byte = make([]byte, 512)
+		Reply[0] = 0x05
+		Reply[1] = 0x00
+		Reply[2] = 0x00
 		Reply[3] = 0x01
 		copy(Reply[4:8], ProxyAddr.IP)
 		binary.BigEndian.PutUint16(Reply[8:10], uint16(ProxyAddr.Port))
