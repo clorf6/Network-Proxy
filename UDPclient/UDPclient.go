@@ -7,22 +7,22 @@ import (
 	"encoding/binary"
 )
 
-func GetAddr(buffer []byte) string {
+func GetAddr(atyp int, buffer []byte) string {
 	var addr string
 	var port uint16
-	atyp := int(buffer[3])
 	switch atyp {
 		case 1: 
-			addr = fmt.Sprintf("%d.%d.%d.%d", buffer[4], buffer[5], buffer[6], buffer[7])
-			port = binary.BigEndian.Uint16(buffer[8:10])
+			addr = fmt.Sprintf("%d.%d.%d.%d", buffer[0], buffer[1], buffer[2], buffer[3])
+			port = binary.BigEndian.Uint16(buffer[4:6])
 		case 3:
-			addrlen := int(buffer[4])
-			addr = string(buffer[5: 5 + addrlen])
-			port = binary.BigEndian.Uint16(buffer[5 + addrlen:7 + addrlen])
+			addrlen := int(buffer[0])
+			addr = string(buffer[1: 1 + addrlen])
+			port = binary.BigEndian.Uint16(buffer[1 + addrlen:3 + addrlen])
 		case 4:
-			addr = fmt.Sprintf("%02x%02x:%02x%02x:%02x%02x:%02x%02x", 
-			buffer[4], buffer[5], buffer[6], buffer[7], buffer[8], buffer[9], buffer[10], buffer[11])
-			port = binary.BigEndian.Uint16(buffer[12:14])
+			addr = fmt.Sprintf("[%02x%02x:%02x%02x:%02x%02x:%02x%02x:%02x%02x:%02x%02x:%02x%02x:%02x%02x]", 
+			buffer[0], buffer[1], buffer[2], buffer[3], buffer[4], buffer[5], buffer[6], buffer[7], 
+			buffer[8], buffer[9], buffer[10], buffer[11], buffer[12], buffer[13], buffer[14], buffer[15])
+			port = binary.BigEndian.Uint16(buffer[16:18])
 		default:
 			return ""
 	}
@@ -55,7 +55,7 @@ func main() {
 		log.Fatal(err)
 	}
 	fmt.Printf("Bindback %d %v\n", n, buffer[:n])
-	ProxyAddr, err := net.ResolveUDPAddr("udp", GetAddr(buffer[:n]))
+	ProxyAddr, err := net.ResolveUDPAddr("udp", GetAddr(int(buffer[3]), buffer[4:]))
 	LocalAddr, err := net.ResolveUDPAddr("udp", "127.0.0.1:4321")
 	if (err != nil) {
 		log.Fatal(err)
@@ -67,13 +67,14 @@ func main() {
 	if (err != nil) {
 		log.Fatal(err)
 	}
-	RemoteAddr, err := net.ResolveUDPAddr("udp", "0.0.0.0:9999")
+	RemoteAddr, err := net.ResolveUDPAddr("udp", "127.0.0.1:9999")
 	if (err != nil) {
 		log.Fatal(err)
 	}
 	fmt.Printf("remoteaddr %v\n", RemoteAddr)
-	UDPconn1.WriteToUDP([]byte{0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 
-	0x00, 0x00, 0x27, 0x0f, 0x01, 0x02, 0x03, 0x04}, ProxyAddr)
+	UDPconn1.WriteToUDP([]byte{0x00, 0x00, 0x00, 0x01, 0x7f, 0x00, 
+	0x00, 0x01, 0x27, 0x0f, 0x01, 0x02, 0x03, 0x04}, ProxyAddr)
+	fmt.Printf("write\n")
 	UDPconn2, err := net.ListenUDP("udp", RemoteAddr)
 	defer UDPconn2.Close()
 	if (err != nil) {
@@ -109,7 +110,7 @@ func main() {
 				}
 			}
 		}()
-		UDPconn1.WriteToUDP([]byte{0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 
-			0x00, 0x00, 0x27, 0x0f, 0x01, 0x02, 0x03, 0x04}, ProxyAddr)
+		UDPconn1.WriteToUDP([]byte{0x00, 0x00, 0x00, 0x01, 0x7f, 0x00, 
+			0x00, 0x01, 0x27, 0x0f, 0x01, 0x02, 0x03, 0x04}, ProxyAddr)
 	}
 }

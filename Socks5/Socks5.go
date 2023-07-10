@@ -32,6 +32,20 @@ func GetAddr(atyp int, buffer []byte) string {
 	return fmt.Sprintf("%s:%d", addr, port)
 }
 
+func GetData(atyp int, buffer []byte) []byte {
+	switch atyp {
+		case 1: 
+			return buffer[6:]
+		case 3:
+			addrlen := int(buffer[0])
+			return buffer[addrlen + 3:]
+		case 4:
+			return buffer[18:]
+		default:
+			return nil
+	}
+}
+
 func Authentication(client net.Conn) error {
 	var buffer []byte = make([]byte, 512)
 	n, err := io.ReadFull(client, buffer[:2])
@@ -86,6 +100,7 @@ func HandleUDP(LocalConn, RemoteConn *net.UDPConn, dest string) (error) {
 	var buffer []byte = make([]byte, 512)
 	n, LocalAddr, err := LocalConn.ReadFromUDP(buffer)
 	if (err != nil) {
+		fmt.Printf("%v\n", err)
 		return err
 	}
 	fmt.Printf("DST %v\n",buffer[:n])
@@ -99,34 +114,12 @@ func HandleUDP(LocalConn, RemoteConn *net.UDPConn, dest string) (error) {
 		Local_n := n
 		Remote_n := 0
 	 	for {
-			RemoteConn.WriteToUDP(LocalBuffer[:Local_n], RemoteAddr)
+			RemoteConn.WriteToUDP(GetData(int(LocalBuffer[3]), LocalBuffer[4:Local_n]), RemoteAddr)
 			fmt.Printf("write to remote %d %v\n", Local_n, LocalBuffer[:Local_n])
-			go func() {
-				for {
-					Remote_n, RemoteAddr, err = RemoteConn.ReadFromUDP(RemoteBuffer)
-					if (err != nil) {
-						continue
-					} else {
-						fmt.Printf("read from remote %d %v\n", Remote_n, RemoteBuffer[:Remote_n])
-						fmt.Printf("RemoteAddr %v\n", RemoteAddr)
-						break
-					}
-				}
-			}()
+			Remote_n, RemoteAddr, _ = RemoteConn.ReadFromUDP(RemoteBuffer)
 			fmt.Printf("write to local %d %v\n", Remote_n, RemoteBuffer[:Remote_n])
-			LocalConn.WriteToUDP(RemoteBuffer[:Remote_n], LocalAddr)
-			go func() {
-				for {
-					Local_n, LocalAddr, err = LocalConn.ReadFromUDP(LocalBuffer)
-					if (err != nil) {
-						continue
-					} else {
-						fmt.Printf("read from local %d %v\n", Local_n, LocalBuffer[:Local_n])
-						fmt.Printf("LocalAddr %v\n", LocalAddr)
-						break
-					}
-				}
-			}()
+			LocalConn.WriteToUDP(GetData(int(RemoteBuffer[3]), RemoteBuffer[4:Remote_n]), LocalAddr)
+			Local_n, LocalAddr, _ = LocalConn.ReadFromUDP(LocalBuffer)
 		}
 	}
 	return nil
@@ -206,11 +199,9 @@ func Connect(client net.Conn) (error) {
 		HandleConnect(client, dst)
 		return nil
 	} else if (cmd == 3) {
-		LocalConn, err := net.ListenUDP("udp", nil)
-		if (err != nil) {
-			return err
-		}
-		RemoteConn, _ := net.ListenUDP("udp", nil)
+		Addr := "127.0.0.1:0"
+		EmptyAddr, _ := net.ResolveUDPAddr("udp", Addr)
+		LocalConn, err := net.ListenUDP("udp", EmptyAddr)
 		if (err != nil) {
 			return err
 		}
@@ -221,15 +212,30 @@ func Connect(client net.Conn) (error) {
 		Reply[0] = 0x05
 		Reply[1] = 0x00
 		Reply[2] = 0x00
-		Reply[3] = 0x01
-		copy(Reply[4:8], ProxyAddr.IP)
-		binary.BigEndian.PutUint16(Reply[8:10], uint16(ProxyAddr.Port))
-		n, err = client.Write(Reply[:10])
+		if (ProxyAddr.IP.To4() != nil) {
+			Reply[3] = 0x01
+			copy(Reply[4:8], ProxyAddr.IP)
+			binary.BigEndian.PutUint16(Reply[8:10], uint16(ProxyAddr.Port))
+			n, err = client.Write(Reply[:10])
+			fmt.Printf("rep %v\n", Reply[:10])
+		} else if (ProxyAddr.IP.To16() != nil) {
+			Reply[3] = 0x04
+			copy(Reply[4:20], ProxyAddr.IP)
+			binary.BigEndian.PutUint16(Reply[20:22], uint16(ProxyAddr.Port))
+			n, err = client.Write(Reply[:22])
+			fmt.Printf("rep %v\n", Reply[:22])
+		}
+		if (err != nil) {
+			return err
+		}
+		RemoteConn, err := net.ListenUDP("udp", nil)
 		if (err != nil) {
 			return err
 		}
 		go func() error {
 			err = HandleUDP(LocalConn, RemoteConn, dest)
+			defer LocalConn.Close()
+			defer RemoteConn.Close()
 			return err
 		}()
 	}
