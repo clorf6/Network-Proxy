@@ -1,9 +1,9 @@
 #!/bin/bash
 
-cd ..
+cd ../Socks5
 go build
+./Socks5 &
 cd -
-../Network &
 # change the line above to start your own server
 # node ~/Code/proxy/socks5 &
 # ../bin/proxy &
