@@ -1,6 +1,8 @@
 package Socks5
 
 import (
+	"TLS"
+	"bytes"
 	"encoding/binary"
 	"errors"
 	"fmt"
@@ -50,18 +52,18 @@ func Authentication(client net.Conn) error {
 	var buffer []byte = make([]byte, 512)
 	n, err := io.ReadFull(client, buffer[:2])
 	if n != 2 {
-		return errors.New("Reading error")
+		return errors.New("reading error")
 	}
 	if err != nil {
 		return err
 	}
 	ver, nmethods := int(buffer[0]), int(buffer[1])
 	if ver != 5 {
-		return errors.New("Invalid version")
+		return errors.New("invalid version")
 	}
 	n, err = io.ReadFull(client, buffer[:nmethods])
 	if n != nmethods {
-		return errors.New("Auth is so long or so short")
+		return errors.New("auth is so long or so short")
 	}
 	if err != nil {
 		return err
@@ -74,12 +76,12 @@ func Authentication(client net.Conn) error {
 		}
 	}
 	if !flag {
-		n, err = client.Write([]byte{0x05, 0xff})
-		return errors.New("Refuse Auth")
+		client.Write([]byte{0x05, 0xff})
+		return errors.New("refuse auth")
 	}
 	n, err = client.Write([]byte{0x05, 0x00})
 	if n != 2 {
-		return errors.New("Reading error")
+		return errors.New("reading error")
 	}
 	if err != nil {
 		return err
@@ -88,8 +90,10 @@ func Authentication(client net.Conn) error {
 }
 
 func HandleConnect(client, host net.Conn) {
-	go io.Copy(client, host)
-	io.Copy(host, client)
+	defer client.Close()
+	defer host.Close()
+	go forward(client, host)
+	forward(host, client)
 }
 
 func HandleUDP(LocalConn, RemoteConn *net.UDPConn, dest string) error {
@@ -126,23 +130,23 @@ func HandleUDP(LocalConn, RemoteConn *net.UDPConn, dest string) error {
 }
 
 func Connect(client net.Conn) error {
-	var buffer []byte = make([]byte, 512)
+	var buffer []byte = make([]byte, 4096)
 	n, err := io.ReadFull(client, buffer[:4])
 	if n != 4 {
-		return errors.New("Reading error")
+		return errors.New("reading error")
 	}
 	if err != nil {
 		return err
 	}
 	ver, cmd, _, atyp := int(buffer[0]), int(buffer[1]), int(buffer[2]), int(buffer[3])
 	if ver != 5 {
-		return errors.New("Invalid version")
+		return errors.New("invalid version")
 	}
 	switch atyp {
 	case 1:
 		n, err = io.ReadFull(client, buffer[:6])
 		if n != 6 {
-			return errors.New("Reading error")
+			return errors.New("reading error")
 		}
 		if err != nil {
 			return err
@@ -150,7 +154,7 @@ func Connect(client net.Conn) error {
 	case 3:
 		n, err = io.ReadFull(client, buffer[:1])
 		if n != 1 {
-			return errors.New("Reading error")
+			return errors.New("reading error")
 		}
 		if err != nil {
 			return err
@@ -158,7 +162,7 @@ func Connect(client net.Conn) error {
 		addrlen := int(buffer[0])
 		n, err = io.ReadFull(client, buffer[1:addrlen+3])
 		if n != addrlen+2 {
-			return errors.New("Reading error")
+			return errors.New("reading error")
 		}
 		if err != nil {
 			return err
@@ -166,37 +170,57 @@ func Connect(client net.Conn) error {
 	case 4:
 		n, err = io.ReadFull(client, buffer[:18])
 		if n != 18 {
-			return errors.New("Reading error")
+			return errors.New("reading error")
 		}
 		if err != nil {
 			return err
 		}
 	default:
-		n, _ = client.Write([]byte{0x05, 0x08, 0x00, 0x01, 0, 0, 0, 0, 0, 0})
-		return errors.New("ATYP is wrong")
+		client.Write([]byte{0x05, 0x08, 0x00, 0x01, 0, 0, 0, 0, 0, 0})
+		return errors.New("atyp is wrong")
 	}
 	dest := GetAddr(atyp, buffer)
+	fmt.Println("dest: ", dest)
 	if cmd < 1 || cmd > 3 {
-		n, _ = client.Write([]byte{0x05, 0x07, 0x00, 0x01, 0, 0, 0, 0, 0, 0})
+		client.Write([]byte{0x05, 0x07, 0x00, 0x01, 0, 0, 0, 0, 0, 0})
 		return errors.New("cmd is wrong")
 	} else if cmd == 1 {
-		dst, err := net.DialTimeout("tcp", dest, 3*time.Second)
+		_, err = client.Write([]byte{0x05, 0x00, 0x00, 0x01, 0, 0, 0, 0, 0, 0})
+		if err != nil {
+			return err
+		}
+		remote, err := net.DialTimeout("tcp", dest, 3*time.Second)
 		if err != nil {
 			if strings.Contains(err.Error(), "lookup invalid") {
-				n, _ = client.Write([]byte{0x05, 0x04, 0x00, 0x01, 0, 0, 0, 0, 0, 0})
+				client.Write([]byte{0x05, 0x04, 0x00, 0x01, 0, 0, 0, 0, 0, 0})
 			} else if strings.Contains(err.Error(), "network is unreachable") {
-				n, _ = client.Write([]byte{0x05, 0x03, 0x00, 0x01, 0, 0, 0, 0, 0, 0})
+				client.Write([]byte{0x05, 0x03, 0x00, 0x01, 0, 0, 0, 0, 0, 0})
 			} else {
-				n, _ = client.Write([]byte{0x05, 0x05, 0x00, 0x01, 0, 0, 0, 0, 0, 0})
+				client.Write([]byte{0x05, 0x05, 0x00, 0x01, 0, 0, 0, 0, 0, 0})
 			}
 			return err
 		}
-		defer dst.Close()
-		n, err = client.Write([]byte{0x05, 0x00, 0x00, 0x01, 0, 0, 0, 0, 0, 0})
+		remote.Close()
+		nextByte := make([]byte, 4096)
+		n, err = client.Read(nextByte)
+		if err != nil {
+			fmt.Println("Failed to read client handshake:", err)
+			return err
+		}
+		handshakeBuffer := bytes.NewBuffer(nextByte[:n])
+		if nextByte[0] != 22 {
+			remote, err = net.DialTimeout("tcp", dest, 3*time.Second)
+		} else {
+			TLS.StartProxy(":9080", dest)
+			remote, err = net.DialTimeout("tcp", "127.0.0.1:9080", 3*time.Second)
+		}
 		if err != nil {
 			return err
 		}
-		HandleConnect(client, dst)
+		defer remote.Close()
+		remote.Write(handshakeBuffer.Bytes())
+		go io.Copy(client, remote)
+		io.Copy(remote, client)
 		return nil
 	} else if cmd == 3 {
 		Addr := "127.0.0.1:0"
@@ -216,13 +240,13 @@ func Connect(client net.Conn) error {
 			Reply[3] = 0x01
 			copy(Reply[4:8], ProxyAddr.IP)
 			binary.BigEndian.PutUint16(Reply[8:10], uint16(ProxyAddr.Port))
-			n, err = client.Write(Reply[:10])
+			client.Write(Reply[:10])
 			fmt.Printf("rep %v\n", Reply[:10])
 		} else if ProxyAddr.IP.To16() != nil {
 			Reply[3] = 0x04
 			copy(Reply[4:20], ProxyAddr.IP)
 			binary.BigEndian.PutUint16(Reply[20:22], uint16(ProxyAddr.Port))
-			n, err = client.Write(Reply[:22])
+			client.Write(Reply[:22])
 			fmt.Printf("rep %v\n", Reply[:22])
 		}
 		if err != nil {
@@ -240,6 +264,32 @@ func Connect(client net.Conn) error {
 		}()
 	}
 	return nil
+}
+
+func forward(dst io.Writer, src io.Reader) (int64, error) {
+	buffer := make([]byte, 4096)
+	var totalBytes int64
+	for {
+		n, err := src.Read(buffer)
+		if n > 0 {
+			fmt.Printf("Read %d bytes: %s\n", n, string(buffer[:n]))
+			written, writeErr := dst.Write(buffer[:n])
+			// if written > 0 {
+			// 	log.Printf("Written %d bytes: %v\n", written, buffer[:written])
+			// }
+			if writeErr != nil {
+				return totalBytes, writeErr
+			}
+			totalBytes += int64(written)
+		}
+		if err != nil {
+			if err == io.EOF {
+				break
+			}
+			return totalBytes, err
+		}
+	}
+	return totalBytes, nil
 }
 
 func Communicate(client net.Conn) {
