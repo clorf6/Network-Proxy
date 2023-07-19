@@ -92,8 +92,8 @@ func Authentication(client net.Conn) error {
 func HandleConnect(client, host net.Conn) {
 	defer client.Close()
 	defer host.Close()
-	go forward(client, host)
-	forward(host, client)
+	go io.Copy(client, host)
+	io.Copy(host, client)
 }
 
 func HandleUDP(LocalConn, RemoteConn *net.UDPConn, dest string) error {
@@ -129,7 +129,7 @@ func HandleUDP(LocalConn, RemoteConn *net.UDPConn, dest string) error {
 	return nil
 }
 
-func Connect(client net.Conn) error {
+func Connect(client net.Conn, hijack bool) error {
 	var buffer []byte = make([]byte, 4096)
 	n, err := io.ReadFull(client, buffer[:4])
 	if n != 4 {
@@ -185,10 +185,6 @@ func Connect(client net.Conn) error {
 		client.Write([]byte{0x05, 0x07, 0x00, 0x01, 0, 0, 0, 0, 0, 0})
 		return errors.New("cmd is wrong")
 	} else if cmd == 1 {
-		_, err = client.Write([]byte{0x05, 0x00, 0x00, 0x01, 0, 0, 0, 0, 0, 0})
-		if err != nil {
-			return err
-		}
 		remote, err := net.DialTimeout("tcp", dest, 3*time.Second)
 		if err != nil {
 			if strings.Contains(err.Error(), "lookup invalid") {
@@ -200,27 +196,33 @@ func Connect(client net.Conn) error {
 			}
 			return err
 		}
-		remote.Close()
-		nextByte := make([]byte, 4096)
-		n, err = client.Read(nextByte)
-		if err != nil {
-			fmt.Println("Failed to read client handshake:", err)
-			return err
-		}
-		handshakeBuffer := bytes.NewBuffer(nextByte[:n])
-		if nextByte[0] != 22 {
-			remote, err = net.DialTimeout("tcp", dest, 3*time.Second)
-		} else {
-			TLS.StartProxy(":9080", dest)
-			remote, err = net.DialTimeout("tcp", "127.0.0.1:9080", 3*time.Second)
-		}
-		if err != nil {
-			return err
-		}
 		defer remote.Close()
-		remote.Write(handshakeBuffer.Bytes())
-		go io.Copy(client, remote)
-		io.Copy(remote, client)
+		_, err = client.Write([]byte{0x05, 0x00, 0x00, 0x01, 0, 0, 0, 0, 0, 0})
+		if err != nil {
+			return err
+		}
+		if hijack {
+			nextByte := make([]byte, 4096)
+			n, err = client.Read(nextByte)
+			if err != nil {
+				fmt.Println("Failed to read client handshake:", err)
+				return err
+			}
+			handshakeBuffer := bytes.NewBuffer(nextByte[:n])
+			if hijack && nextByte[0] == 22 && nextByte[1] == 3 && nextByte[2] == 3 && nextByte[3] == 0 {
+				remote.Close()
+				lis := TLS.StartProxyListen()
+				TLSaddr := lis.Addr().String()
+				go TLS.StartProxyHandle(lis, dest)
+				remote, err = net.DialTimeout("tcp", TLSaddr, 3*time.Second)
+				if err != nil {
+					return err
+				}
+				defer remote.Close()
+			}
+			remote.Write(handshakeBuffer.Bytes())
+		}
+		HandleConnect(client, remote)
 		return nil
 	} else if cmd == 3 {
 		Addr := "127.0.0.1:0"
@@ -266,47 +268,21 @@ func Connect(client net.Conn) error {
 	return nil
 }
 
-func forward(dst io.Writer, src io.Reader) (int64, error) {
-	buffer := make([]byte, 4096)
-	var totalBytes int64
-	for {
-		n, err := src.Read(buffer)
-		if n > 0 {
-			fmt.Printf("Read %d bytes: %s\n", n, string(buffer[:n]))
-			written, writeErr := dst.Write(buffer[:n])
-			// if written > 0 {
-			// 	log.Printf("Written %d bytes: %v\n", written, buffer[:written])
-			// }
-			if writeErr != nil {
-				return totalBytes, writeErr
-			}
-			totalBytes += int64(written)
-		}
-		if err != nil {
-			if err == io.EOF {
-				break
-			}
-			return totalBytes, err
-		}
-	}
-	return totalBytes, nil
-}
-
-func Communicate(client net.Conn) {
+func Communicate(client net.Conn, hijack bool) {
 	defer client.Close()
 	err := Authentication(client)
 	if err != nil {
 		fmt.Printf("Authentication error: %v\n", err)
 		return
 	}
-	err = Connect(client)
+	err = Connect(client, hijack)
 	if err != nil {
 		fmt.Printf("Connect error: %v\n", err)
 		return
 	}
 }
 
-func StartProxy(ProxyAddr string) {
+func StartProxy(ProxyAddr string, hijack bool) {
 	server, err := net.Listen("tcp", ProxyAddr)
 	if err != nil {
 		fmt.Printf("Listen error: %v\n", err)
@@ -318,6 +294,6 @@ func StartProxy(ProxyAddr string) {
 			fmt.Printf("Accept error: %v\n", err)
 			continue
 		}
-		go Communicate(client)
+		go Communicate(client, hijack)
 	}
 }

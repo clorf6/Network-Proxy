@@ -5,5 +5,5 @@ import (
 )
 
 func main() {
-	Socks5.StartProxy(":8080")
+	Socks5.StartProxy(":8080", true)
 }

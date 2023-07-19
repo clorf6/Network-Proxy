@@ -24,9 +24,6 @@ func forward(dst io.Writer, src io.Reader) (int64, error) {
 		if n > 0 {
 			log.Printf("Read %d bytes: %s\n", n, string(buffer[:n]))
 			written, writeErr := dst.Write(buffer[:n])
-			// if written > 0 {
-			// 	log.Printf("Written %d bytes: %v\n", written, buffer[:written])
-			// }
 			if writeErr != nil {
 				return totalBytes, writeErr
 			}
@@ -147,18 +144,20 @@ func generateKeyPair(host string) (rawCert, rawKey []byte, err error) {
 	return
 }
 
-func StartProxy(ProxyAddr string, host string) {
-	lis, err := net.Listen("tcp", ProxyAddr)
+func StartProxyListen() net.Listener {
+	lis, err := net.Listen("tcp", ":0")
 	if err != nil {
 		fmt.Printf("Listen TLS error: %v\n", err)
+		return nil
+	}
+	return lis
+}
+
+func StartProxyHandle(lis net.Listener, host string) {
+	conn, err := lis.Accept()
+	if err != nil {
+		fmt.Printf("Accept TLS error: %v\n", err)
 		return
 	}
-	go func() {
-		conn, err := lis.Accept()
-		if err != nil {
-			fmt.Printf("Accept TLS error: %v\n", err)
-			return
-		}
-		handleTLS(conn, host)
-	}()
+	handleTLS(conn, host)
 }
