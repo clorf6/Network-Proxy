@@ -1,6 +1,7 @@
 package Socks5
 
 import (
+	"HTTP"
 	"TLS"
 	"bytes"
 	"encoding/binary"
@@ -92,8 +93,10 @@ func Authentication(client net.Conn) error {
 func HandleConnect(client, host net.Conn) {
 	defer client.Close()
 	defer host.Close()
-	go io.Copy(client, host)
-	io.Copy(host, client)
+	go HTTP.ForwardRemote(client, host)
+	HTTP.ForwardClient(client, host)
+	// go io.Copy(client, host)
+	// io.Copy(host, client)
 }
 
 func HandleUDP(LocalConn, RemoteConn *net.UDPConn, dest string) error {
@@ -209,7 +212,8 @@ func Connect(client net.Conn, hijack bool) error {
 				return err
 			}
 			handshakeBuffer := bytes.NewBuffer(nextByte[:n])
-			if hijack && nextByte[0] == 22 && nextByte[1] == 3 && nextByte[2] == 3 && nextByte[3] == 0 {
+			if hijack && nextByte[0] == 22 {
+				fmt.Print("TLS\n")
 				remote.Close()
 				lis := TLS.StartProxyListen()
 				TLSaddr := lis.Addr().String()

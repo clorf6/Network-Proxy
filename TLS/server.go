@@ -1,6 +1,7 @@
 package TLS
 
 import (
+	"HTTP"
 	"crypto/rand"
 	"crypto/rsa"
 	"crypto/tls"
@@ -22,7 +23,7 @@ func forward(dst io.Writer, src io.Reader) (int64, error) {
 	for {
 		n, err := src.Read(buffer)
 		if n > 0 {
-			log.Printf("Read %d bytes: %s\n", n, string(buffer[:n]))
+			fmt.Printf("Read %d bytes: %s\n", n, string(buffer[:n]))
 			written, writeErr := dst.Write(buffer[:n])
 			if writeErr != nil {
 				return totalBytes, writeErr
@@ -44,8 +45,8 @@ func transmit(dst, src net.Conn) {
 	defer src.Close()
 	// go io.Copy(src, dst)
 	// io.Copy(dst, src)
-	go forward(src, dst)
-	forward(dst, src)
+	go HTTP.ForwardRemote(src, dst)
+	HTTP.ForwardClient(src, dst)
 }
 
 func NewRemoteConfig(host string) *tls.Config {
@@ -82,7 +83,7 @@ func handleTLS(conn net.Conn, host string) {
 	TLSconn := tls.Server(conn, NewRemoteConfig(hostAddr))
 	err = TLSconn.Handshake()
 	if err != nil {
-		log.Panic(err)
+		log.Panicf("TLS handshake err: %v\n", err)
 		return
 	}
 	transmit(remoteConn, TLSconn)

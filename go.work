@@ -2,4 +2,6 @@ go 1.20
 
 use ./TLS
 use ./Socks5
+use ./HTTP
 use ./Forward
+
