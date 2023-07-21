@@ -3,15 +3,18 @@ package HTTP
 import (
 	"bufio"
 	"bytes"
+	"compress/flate"
 	"compress/gzip"
 	"errors"
 	"fmt"
 	"io"
+	"io/ioutil"
 	"log"
 	"net"
 	"net/http"
-	"os"
 	"strings"
+
+	"github.com/andybalholm/brotli"
 )
 
 const (
@@ -83,7 +86,6 @@ func decodeResponse(data []byte) ([]byte, int64) {
 	head := make([]byte, 0)
 	head = append(head, str[:ind]...)
 	//index := strings.Index(str[:ind], "gzip")
-	var comp bool = false
 	// if index >= 0 {
 	// 	comp = true
 	// }
@@ -98,46 +100,86 @@ func decodeResponse(data []byte) ([]byte, int64) {
 		body = append(body, str[ind:ind+len]...)
 		ind += len + 2 // body
 	}
-	body = modifyResponseBody(body, comp)
+	//body = modifyResponseBody(body, comp)
 	head = append(head, body...)
 	return head, int64(len(head))
 }
 
-func Decompress(data []byte) []byte {
-	buffer := bytes.Buffer{}
-	fmt.Printf("byte %v\n", data[:16])
-	file, _ := os.OpenFile("a.txt", os.O_CREATE|os.O_WRONLY, 0666)
-	file.Write(data)
-	file.Close()
-	gzipReader, err := gzip.NewReader(bytes.NewReader(data))
-	if err != nil {
-		log.Panic(err)
+func Decompress(data []byte, compress int) []byte {
+	if len(data) == 0 {
 		return nil
 	}
-	io.Copy(&buffer, gzipReader)
-	gzipReader.Close()
-	return buffer.Bytes()
+	if compress == 0 {
+		return data
+	} else if compress == 1 {
+		buffer := bytes.Buffer{}
+		gzipReader, err := gzip.NewReader(bytes.NewReader(data))
+		if err != nil {
+			log.Panic(err)
+			return nil
+		}
+		io.Copy(&buffer, gzipReader)
+		gzipReader.Close()
+		return buffer.Bytes()
+	} else if compress == 2 {
+		brReader := brotli.NewReader(bytes.NewReader(data))
+		ret, err := ioutil.ReadAll(brReader)
+		if err != nil {
+			log.Panic(err)
+		}
+		return ret
+	} else if compress == 3 {
+		flateReader := flate.NewReader(bytes.NewReader(data))
+		ret, err := ioutil.ReadAll(flateReader)
+		if err != nil {
+			log.Panic(err)
+		}
+		return ret
+	}
+	return nil
 }
 
-func Compress(data []byte) []byte {
-	buffer := bytes.Buffer{}
-	gzipWriter := gzip.NewWriter(&buffer)
-	gzipWriter.Write(data)
-	gzipWriter.Close()
-	return buffer.Bytes()
+func Compress(data []byte, compress int) []byte {
+	if len(data) == 0 {
+		return nil
+	}
+	if compress == 0 {
+		return data
+	} else if compress == 1 {
+		buffer := bytes.Buffer{}
+		gzipWriter := gzip.NewWriter(&buffer)
+		gzipWriter.Write(data)
+		gzipWriter.Close()
+		return buffer.Bytes()
+	} else if compress == 2 {
+		buffer := bytes.Buffer{}
+		brWriter := brotli.NewWriter(&buffer)
+		brWriter.Write(data)
+		brWriter.Close()
+		return buffer.Bytes()
+	} else if compress == 3 {
+		buffer := bytes.Buffer{}
+		flateWriter, _ := flate.NewWriter(&buffer, flate.DefaultCompression)
+		flateWriter.Write(data)
+		flateWriter.Close()
+		return buffer.Bytes()
+	}
+	return nil
 }
 
-func modifyResponseBody(data []byte, compress bool) []byte {
+func modifyResponseBody(data []byte, compress int) []byte {
+	if len(data) == 0 {
+		return nil
+	}
 	ret := make([]byte, 0)
 	ret = append(ret, data...)
-	if compress {
-		ret = Decompress(ret)
-	}
+	ret = Decompress(ret, compress)
+	// if compress > 0 {
+	// 	fmt.Printf("after dec %s\n", string(ret[:min(100, len(ret))]))
+	// }
 	ret = bytes.Replace(ret, []byte("百度"), []byte("搜狗"), -1)
 	/*Modify there*/
-	if compress {
-		ret = Compress(ret)
-	}
+	ret = Compress(ret, compress)
 	return ret
 }
 
@@ -158,10 +200,28 @@ func modifyResponseHead(str string, n int64) []byte {
 }
 
 func modifyResponse(data []byte, n int64) ([]byte, int64) {
-	ind := strings.Index(string(data), "\r\n\r\n")
+	// fmt.Printf("data %s\n", string(data))
+	ind := strings.Index(string(data), "\r\n\r\n") + 4
 	headstr := string(data[:ind])
-	body := modifyResponseBody(data[ind:], false)
-	head := modifyResponseHead(headstr, int64(len(body)-4))
+	// fmt.Printf("body %v\n", data[ind:])
+	compress := 0
+	index := strings.Index(headstr, "Content-Encoding: gzip")
+	if index > 0 {
+		compress = 1
+	}
+	index = strings.Index(headstr, "Content-Encoding: br")
+	if index > 0 {
+		compress = 2
+	}
+	index = strings.Index(headstr, "Content-Encoding: deflate")
+	if index > 0 {
+		compress = 3
+	}
+	// if compress > 0 {
+	// 	fmt.Printf("head %s\n", headstr)
+	// }
+	body := modifyResponseBody(data[ind:], compress)
+	head := modifyResponseHead(headstr, int64(len(body)))
 	head = append(head, body...)
 	return head, int64(len(head))
 }
@@ -257,7 +317,6 @@ func ForwardClient(client, remote net.Conn) {
 			heads := strings.Split(string(req), "\r\n")
 			var flag bool = false
 			for i := 0; i < len(heads); i++ {
-				//fmt.Printf("head %d %s\n", i, heads[i])
 				if strings.HasPrefix(heads[i], "Accept-Encoding:") {
 					heads[i] = "Accept-Encoding: identity"
 					flag = true
@@ -269,9 +328,9 @@ func ForwardClient(client, remote net.Conn) {
 				heads = append(heads, "")
 			}
 			if heads[len(heads)-1] == "" {
-				buffer = []byte(strings.Join(heads, "\r\n"))
-				n = len(buffer)
-				//fmt.Printf("req %s\n", string(buffer[:n]))
+				// buffer = []byte(strings.Join(heads, "\r\n"))
+				// n = len(buffer)
+				// fmt.Printf("req %s\n", string(buffer[:n]))
 				Done = -1
 				req = nil
 				Len = 0
