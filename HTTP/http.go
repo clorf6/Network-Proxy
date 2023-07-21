@@ -3,11 +3,14 @@ package HTTP
 import (
 	"bufio"
 	"bytes"
+	"compress/gzip"
 	"errors"
 	"fmt"
+	"io"
 	"log"
 	"net"
 	"net/http"
+	"os"
 	"strings"
 )
 
@@ -76,10 +79,14 @@ func parseResponse(data []byte) int64 {
 
 func decodeResponse(data []byte) ([]byte, int64) {
 	str := string(data)
-	//fmt.Printf("Decode:\n %v\n", str)
 	ind := strings.Index(str, "\r\n\r\n") + 4
 	head := make([]byte, 0)
 	head = append(head, str[:ind]...)
+	//index := strings.Index(str[:ind], "gzip")
+	var comp bool = false
+	// if index >= 0 {
+	// 	comp = true
+	// }
 	body := make([]byte, 0)
 	for {
 		len := 0
@@ -91,14 +98,46 @@ func decodeResponse(data []byte) ([]byte, int64) {
 		body = append(body, str[ind:ind+len]...)
 		ind += len + 2 // body
 	}
+	body = modifyResponseBody(body, comp)
 	head = append(head, body...)
-	//fmt.Printf("Final:\n %v\n", string(head))
 	return head, int64(len(head))
 }
 
-func modifyResponseBody(data []byte) []byte {
-	ret := bytes.Replace(data, []byte("百度"), []byte("搜狗"), -1)
+func Decompress(data []byte) []byte {
+	buffer := bytes.Buffer{}
+	fmt.Printf("byte %v\n", data[:16])
+	file, _ := os.OpenFile("a.txt", os.O_CREATE|os.O_WRONLY, 0666)
+	file.Write(data)
+	file.Close()
+	gzipReader, err := gzip.NewReader(bytes.NewReader(data))
+	if err != nil {
+		log.Panic(err)
+		return nil
+	}
+	io.Copy(&buffer, gzipReader)
+	gzipReader.Close()
+	return buffer.Bytes()
+}
+
+func Compress(data []byte) []byte {
+	buffer := bytes.Buffer{}
+	gzipWriter := gzip.NewWriter(&buffer)
+	gzipWriter.Write(data)
+	gzipWriter.Close()
+	return buffer.Bytes()
+}
+
+func modifyResponseBody(data []byte, compress bool) []byte {
+	ret := make([]byte, 0)
+	ret = append(ret, data...)
+	if compress {
+		ret = Decompress(ret)
+	}
+	ret = bytes.Replace(ret, []byte("百度"), []byte("搜狗"), -1)
 	/*Modify there*/
+	if compress {
+		ret = Compress(ret)
+	}
 	return ret
 }
 
@@ -120,8 +159,9 @@ func modifyResponseHead(str string, n int64) []byte {
 
 func modifyResponse(data []byte, n int64) ([]byte, int64) {
 	ind := strings.Index(string(data), "\r\n\r\n")
-	body := modifyResponseBody(data[ind:])
-	head := modifyResponseHead(string(data[:ind]), int64(len(body)-4))
+	headstr := string(data[:ind])
+	body := modifyResponseBody(data[ind:], false)
+	head := modifyResponseHead(headstr, int64(len(body)-4))
 	head = append(head, body...)
 	return head, int64(len(head))
 }
@@ -214,8 +254,24 @@ func ForwardClient(client, remote net.Conn) {
 		if Done > 0 {
 			Len += int64(n)
 			req = append(req, buffer[:n]...)
-			heads := strings.Split(string(req), "\r\n\r\n")
+			heads := strings.Split(string(req), "\r\n")
+			var flag bool = false
+			for i := 0; i < len(heads); i++ {
+				//fmt.Printf("head %d %s\n", i, heads[i])
+				if strings.HasPrefix(heads[i], "Accept-Encoding:") {
+					heads[i] = "Accept-Encoding: identity"
+					flag = true
+					break
+				}
+			}
+			if !flag {
+				heads[len(heads)-1] = "Accept-Encoding: identity"
+				heads = append(heads, "")
+			}
 			if heads[len(heads)-1] == "" {
+				buffer = []byte(strings.Join(heads, "\r\n"))
+				n = len(buffer)
+				//fmt.Printf("req %s\n", string(buffer[:n]))
 				Done = -1
 				req = nil
 				Len = 0

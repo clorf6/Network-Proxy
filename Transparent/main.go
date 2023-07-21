@@ -12,7 +12,7 @@ func main() {
 	ifce := createTUN()
 	log.Printf("Interface Name: %s\n", ifce.Name())
 	RedirectFlowToTUN(ifce.Name())
-	//go handlePackets(ifce)
+	go handlePackets(ifce)
 	signalCh := make(chan os.Signal, 1)
 	signal.Notify(signalCh, os.Interrupt, syscall.SIGTERM)
 	<-signalCh
