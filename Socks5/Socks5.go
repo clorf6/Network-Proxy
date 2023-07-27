@@ -1,7 +1,7 @@
 package Socks5
 
 import (
-	"HTTP"
+	"Shunt"
 	"TLS"
 	"bytes"
 	"encoding/binary"
@@ -9,11 +9,12 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"strconv"
 	"strings"
 	"time"
 )
 
-func GetAddr(atyp int, buffer []byte) string {
+func GetAddr(atyp int, buffer []byte) (string, uint16, string) {
 	var addr string
 	var port uint16
 	switch atyp {
@@ -25,14 +26,20 @@ func GetAddr(atyp int, buffer []byte) string {
 		addr = string(buffer[1 : 1+addrlen])
 		port = binary.BigEndian.Uint16(buffer[1+addrlen : 3+addrlen])
 	case 4:
-		addr = fmt.Sprintf("[%02x%02x:%02x%02x:%02x%02x:%02x%02x:%02x%02x:%02x%02x:%02x%02x:%02x%02x]",
+		addr = fmt.Sprintf("%02x%02x:%02x%02x:%02x%02x:%02x%02x:%02x%02x:%02x%02x:%02x%02x:%02x%02x",
 			buffer[0], buffer[1], buffer[2], buffer[3], buffer[4], buffer[5], buffer[6], buffer[7],
 			buffer[8], buffer[9], buffer[10], buffer[11], buffer[12], buffer[13], buffer[14], buffer[15])
 		port = binary.BigEndian.Uint16(buffer[16:18])
 	default:
-		return ""
+		return "", 0, ""
 	}
-	return fmt.Sprintf("%s:%d", addr, port)
+	var dest string = ""
+	if atyp == 4 {
+		dest = fmt.Sprintf("[%s]:%d", addr, port)
+	} else {
+		dest = fmt.Sprintf("%s:%d", addr, port)
+	}
+	return addr, port, dest
 }
 
 func GetData(atyp int, buffer []byte) []byte {
@@ -53,7 +60,7 @@ func Authentication(client net.Conn) error {
 	var buffer []byte = make([]byte, 512)
 	n, err := io.ReadFull(client, buffer[:2])
 	if n != 2 {
-		return errors.New("reading error")
+		return errors.New("authentic error")
 	}
 	if err != nil {
 		return err
@@ -90,16 +97,14 @@ func Authentication(client net.Conn) error {
 	return nil
 }
 
-func HandleConnect(client, host net.Conn) {
+func TransmitConnect(client, host net.Conn) {
 	defer client.Close()
 	defer host.Close()
-	go HTTP.ForwardRemote(client, host)
-	HTTP.ForwardClient(client, host)
-	// go io.Copy(client, host)
-	// io.Copy(host, client)
+	go io.Copy(client, host)
+	io.Copy(host, client)
 }
 
-func HandleUDP(LocalConn, RemoteConn *net.UDPConn, dest string) error {
+func TransmitUDP(LocalConn, RemoteConn *net.UDPConn, dest string) error {
 	ProxyAddr := LocalConn.LocalAddr().(*net.UDPAddr)
 	ProxyAddr2 := RemoteConn.LocalAddr().(*net.UDPAddr)
 	fmt.Printf("ProxyAddr %v\n", ProxyAddr)
@@ -113,7 +118,8 @@ func HandleUDP(LocalConn, RemoteConn *net.UDPConn, dest string) error {
 	fmt.Printf("DST %v\n", buffer[:n])
 	fmt.Printf("LocalAddr %v\n", LocalAddr)
 	if LocalAddr.String() == dest {
-		RemoteAddr, _ := net.ResolveUDPAddr("udp", GetAddr(int(buffer[3]), buffer[4:]))
+		_, _, remoteAddr := GetAddr(int(buffer[3]), buffer[4:])
+		RemoteAddr, _ := net.ResolveUDPAddr("udp", remoteAddr)
 		fmt.Printf("RemoteAddr %v\n", RemoteAddr)
 		var LocalBuffer []byte = make([]byte, 512)
 		var RemoteBuffer []byte = make([]byte, 512)
@@ -132,7 +138,158 @@ func HandleUDP(LocalConn, RemoteConn *net.UDPConn, dest string) error {
 	return nil
 }
 
-func Connect(client net.Conn, hijack bool) error {
+func GetReply(IP net.IP, port int) []byte {
+	var Reply []byte = make([]byte, 0)
+	Reply = append(Reply, 0x05, 0x00, 0x00)
+	Port := make([]byte, 2)
+	binary.BigEndian.PutUint16(Port, uint16(port))
+	if IP.To4() != nil {
+		Reply = append(Reply, 0x01)
+		IP = IP.To4()
+	} else if IP.To16() != nil {
+		Reply = append(Reply, 0x04)
+		IP = IP.To16()
+	}
+	Reply = append(Reply, IP...)
+	Reply = append(Reply, Port...)
+	return Reply
+}
+
+func GetSend(IP net.IP, port int) []byte {
+	var Send []byte = make([]byte, 0)
+	Send = append(Send, 0x05, 0x01, 0x00)
+	Port := make([]byte, 2)
+	binary.BigEndian.PutUint16(Port, uint16(port))
+	if IP.To4() != nil {
+		Send = append(Send, 0x01)
+		IP = IP.To4()
+	} else if IP.To16() != nil {
+		Send = append(Send, 0x04)
+		IP = IP.To16()
+	}
+	Send = append(Send, IP...)
+	Send = append(Send, Port...)
+	return Send
+}
+
+func HandleConnect(dest string, client net.Conn, hijack bool) error {
+	remote, _ := net.DialTimeout("tcp", dest, 3*time.Second)
+	defer remote.Close()
+	if hijack {
+		nextByte := make([]byte, 4096)
+		n, err := client.Read(nextByte)
+		if err != nil {
+			fmt.Println("Failed to read client handshake:", err)
+			return err
+		}
+		handshakeBuffer := bytes.NewBuffer(nextByte[:n])
+		if hijack && nextByte[0] == 22 && nextByte[1] == 3 {
+			fmt.Print("TLS\n")
+			remote.Close()
+			lis := TLS.StartProxyListen()
+			TLSaddr := lis.Addr().String()
+			go TLS.StartProxyHandle(lis, dest)
+			remote, err = net.DialTimeout("tcp", TLSaddr, 3*time.Second)
+			if err != nil {
+				return err
+			}
+			defer remote.Close()
+		}
+		remote.Write(handshakeBuffer.Bytes())
+	}
+	TransmitConnect(client, remote)
+	return nil
+}
+
+func HandleUDP(dest string, client net.Conn) error {
+	Addr := "127.0.0.1:0"
+	EmptyAddr, _ := net.ResolveUDPAddr("udp", Addr)
+	LocalConn, err := net.ListenUDP("udp", EmptyAddr)
+	if err != nil {
+		return err
+	}
+	ProxyAddr := LocalConn.LocalAddr().(*net.UDPAddr)
+	fmt.Printf("UDP\n")
+	client.Write(GetReply(ProxyAddr.IP, ProxyAddr.Port))
+	if err != nil {
+		return err
+	}
+	RemoteConn, err := net.ListenUDP("udp", nil)
+	if err != nil {
+		return err
+	}
+	go func() error {
+		err = TransmitUDP(LocalConn, RemoteConn, dest)
+		defer LocalConn.Close()
+		defer RemoteConn.Close()
+		return err
+	}()
+	return nil
+}
+
+func HandleMultiAgent(shuntlist []string, client net.Conn,
+	dest string, atyp int) error {
+	var buffer []byte = make([]byte, 4096)
+	remote, err := net.Dial("tcp", shuntlist[0])
+	if err != nil {
+		fmt.Println("Dial shuntlist[0] err")
+		return err
+	}
+	fmt.Println("Multi Agent")
+	for i := 0; i < len(shuntlist); i++ {
+		remote.Write([]byte{0x05, 0x01, 0x00})
+		n, err := io.ReadFull(remote, buffer[:2])
+		if err != nil || n != 2 {
+			fmt.Println("Read Auth err")
+			return err
+		}
+		if buffer[0] != 0x05 || buffer[1] != 0x00 {
+			return errors.New("auth fail")
+		}
+		if i != len(shuntlist)-1 {
+			addr, err := net.ResolveTCPAddr("tcp", shuntlist[i+1])
+			if err != nil {
+				fmt.Println("Resolve err")
+				return err
+			}
+			remote.Write(GetSend(addr.IP, addr.Port))
+		} else {
+			switch atyp {
+			case 1:
+				fallthrough
+			case 4:
+				addr, err := net.ResolveTCPAddr("tcp", dest)
+				if err != nil {
+					fmt.Println("Resolve err")
+					return err
+				}
+				remote.Write(GetSend(addr.IP, addr.Port))
+			case 3:
+				host, portStr, _ := net.SplitHostPort(dest)
+				port, _ := strconv.Atoi(portStr)
+				Send := make([]byte, 0)
+				Send = append(Send, 0x05, 0x01, 0x00, 0x03, byte(len(host)))
+				Send = append(Send, []byte(host)...)
+				Port := make([]byte, 2)
+				binary.BigEndian.PutUint16(Port, uint16(port))
+				Send = append(Send, Port...)
+				remote.Write(Send)
+			}
+		}
+		n, err = remote.Read(buffer)
+		if n <= 6 || err != nil {
+			fmt.Println("Read Bind err")
+			return err
+		}
+		if buffer[1] != 0x00 {
+			return errors.New("DST Connect err")
+		}
+	}
+	TransmitConnect(client, remote)
+	return nil
+}
+
+func Connect(client net.Conn, hijack bool, shunt bool) error {
 	var buffer []byte = make([]byte, 4096)
 	n, err := io.ReadFull(client, buffer[:4])
 	if n != 4 {
@@ -182,111 +339,62 @@ func Connect(client net.Conn, hijack bool) error {
 		client.Write([]byte{0x05, 0x08, 0x00, 0x01, 0, 0, 0, 0, 0, 0})
 		return errors.New("atyp is wrong")
 	}
-	dest := GetAddr(atyp, buffer)
-	fmt.Println("dest: ", dest)
+	addr, _, dest := GetAddr(atyp, buffer)
+	remote, err := net.DialTimeout("tcp", dest, 3*time.Second)
+	if err != nil {
+		if strings.Contains(err.Error(), "lookup invalid") {
+			client.Write([]byte{0x05, 0x04, 0x00, 0x01, 0, 0, 0, 0, 0, 0})
+		} else if strings.Contains(err.Error(), "network is unreachable") {
+			client.Write([]byte{0x05, 0x03, 0x00, 0x01, 0, 0, 0, 0, 0, 0})
+		} else {
+			client.Write([]byte{0x05, 0x05, 0x00, 0x01, 0, 0, 0, 0, 0, 0})
+		}
+		return err
+	}
+	remoteAddr := remote.RemoteAddr().(*net.TCPAddr)
+	remote.Close()
+	_, err = client.Write(GetReply(remoteAddr.IP, remoteAddr.Port))
+	if err != nil {
+		return err
+	}
 	if cmd < 1 || cmd > 3 {
 		client.Write([]byte{0x05, 0x07, 0x00, 0x01, 0, 0, 0, 0, 0, 0})
 		return errors.New("cmd is wrong")
 	} else if cmd == 1 {
-		remote, err := net.DialTimeout("tcp", dest, 3*time.Second)
-		if err != nil {
-			if strings.Contains(err.Error(), "lookup invalid") {
-				client.Write([]byte{0x05, 0x04, 0x00, 0x01, 0, 0, 0, 0, 0, 0})
-			} else if strings.Contains(err.Error(), "network is unreachable") {
-				client.Write([]byte{0x05, 0x03, 0x00, 0x01, 0, 0, 0, 0, 0, 0})
+		if !shunt {
+			return HandleConnect(dest, client, hijack)
+		} else {
+			shuntlist := Shunt.Shunt(addr, atyp)
+			// for i := 0; i < len(shuntlist); i++ {
+			// 	fmt.Printf("i %d %v\n", i, shuntlist[i])
+			// }
+			if shuntlist == nil {
+				return HandleConnect(dest, client, hijack)
 			} else {
-				client.Write([]byte{0x05, 0x05, 0x00, 0x01, 0, 0, 0, 0, 0, 0})
+				return HandleMultiAgent(shuntlist, client, dest, atyp)
 			}
-			return err
 		}
-		defer remote.Close()
-		_, err = client.Write([]byte{0x05, 0x00, 0x00, 0x01, 0, 0, 0, 0, 0, 0})
-		if err != nil {
-			return err
-		}
-		if hijack {
-			nextByte := make([]byte, 4096)
-			n, err = client.Read(nextByte)
-			if err != nil {
-				fmt.Println("Failed to read client handshake:", err)
-				return err
-			}
-			handshakeBuffer := bytes.NewBuffer(nextByte[:n])
-			if hijack && nextByte[0] == 22 {
-				fmt.Print("TLS\n")
-				remote.Close()
-				lis := TLS.StartProxyListen()
-				TLSaddr := lis.Addr().String()
-				go TLS.StartProxyHandle(lis, dest)
-				remote, err = net.DialTimeout("tcp", TLSaddr, 3*time.Second)
-				if err != nil {
-					return err
-				}
-				defer remote.Close()
-			}
-			remote.Write(handshakeBuffer.Bytes())
-		}
-		HandleConnect(client, remote)
-		return nil
 	} else if cmd == 3 {
-		Addr := "127.0.0.1:0"
-		EmptyAddr, _ := net.ResolveUDPAddr("udp", Addr)
-		LocalConn, err := net.ListenUDP("udp", EmptyAddr)
-		if err != nil {
-			return err
-		}
-		ProxyAddr := LocalConn.LocalAddr().(*net.UDPAddr)
-		fmt.Printf("UDP\n")
-		fmt.Printf("dest %s\n", dest)
-		var Reply []byte = make([]byte, 512)
-		Reply[0] = 0x05
-		Reply[1] = 0x00
-		Reply[2] = 0x00
-		if ProxyAddr.IP.To4() != nil {
-			Reply[3] = 0x01
-			copy(Reply[4:8], ProxyAddr.IP)
-			binary.BigEndian.PutUint16(Reply[8:10], uint16(ProxyAddr.Port))
-			client.Write(Reply[:10])
-			fmt.Printf("rep %v\n", Reply[:10])
-		} else if ProxyAddr.IP.To16() != nil {
-			Reply[3] = 0x04
-			copy(Reply[4:20], ProxyAddr.IP)
-			binary.BigEndian.PutUint16(Reply[20:22], uint16(ProxyAddr.Port))
-			client.Write(Reply[:22])
-			fmt.Printf("rep %v\n", Reply[:22])
-		}
-		if err != nil {
-			return err
-		}
-		RemoteConn, err := net.ListenUDP("udp", nil)
-		if err != nil {
-			return err
-		}
-		go func() error {
-			err = HandleUDP(LocalConn, RemoteConn, dest)
-			defer LocalConn.Close()
-			defer RemoteConn.Close()
-			return err
-		}()
+		return HandleUDP(dest, client)
 	}
 	return nil
 }
 
-func Communicate(client net.Conn, hijack bool) {
+func Communicate(client net.Conn, hijack bool, shunt bool) {
 	defer client.Close()
 	err := Authentication(client)
 	if err != nil {
 		fmt.Printf("Authentication error: %v\n", err)
 		return
 	}
-	err = Connect(client, hijack)
+	err = Connect(client, hijack, shunt)
 	if err != nil {
 		fmt.Printf("Connect error: %v\n", err)
 		return
 	}
 }
 
-func StartProxy(ProxyAddr string, hijack bool) {
+func StartProxy(ProxyAddr string, hijack bool, shunt bool) {
 	server, err := net.Listen("tcp", ProxyAddr)
 	if err != nil {
 		fmt.Printf("Listen error: %v\n", err)
@@ -298,6 +406,6 @@ func StartProxy(ProxyAddr string, hijack bool) {
 			fmt.Printf("Accept error: %v\n", err)
 			continue
 		}
-		go Communicate(client, hijack)
+		go Communicate(client, hijack, shunt)
 	}
 }

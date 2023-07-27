@@ -17,7 +17,7 @@ import (
 	"time"
 )
 
-func forward(dst io.Writer, src io.Reader) (int64, error) {
+func Forward(dst io.Writer, src io.Reader) (int64, error) {
 	buffer := make([]byte, 4096)
 	var totalBytes int64
 	for {
@@ -55,17 +55,6 @@ func NewRemoteConfig(host string) *tls.Config {
 		log.Panicf("Load err: %v", err)
 	}
 	config := &tls.Config{
-		Certificates: []tls.Certificate{cert},
-	}
-	return config
-}
-
-func NewLocalConfig() *tls.Config {
-	cert, err := tls.LoadX509KeyPair("../Certificate/server.crt", "../Certificate/server.key")
-	if err != nil {
-		log.Panicf("Load err: %v", err)
-	}
-	config := &tls.Config{
 		Certificates:       []tls.Certificate{cert},
 		InsecureSkipVerify: true,
 	}
@@ -74,6 +63,7 @@ func NewLocalConfig() *tls.Config {
 
 func handleTLS(conn net.Conn, host string) {
 	hostAddr, _, _ := net.SplitHostPort(host)
+	fmt.Printf("host %s\n", hostAddr)
 	remoteConn, err := tls.Dial("tcp", host, NewRemoteConfig(hostAddr))
 	if err != nil {
 		log.Panic(err)
