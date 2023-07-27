@@ -172,9 +172,7 @@ func GetSend(IP net.IP, port int) []byte {
 	return Send
 }
 
-func HandleConnect(dest string, client net.Conn, hijack bool) error {
-	remote, _ := net.DialTimeout("tcp", dest, 3*time.Second)
-	defer remote.Close()
+func HandleConnect(dest string, client, remote net.Conn, hijack bool) error {
 	if hijack {
 		nextByte := make([]byte, 4096)
 		n, err := client.Read(nextByte)
@@ -340,37 +338,33 @@ func Connect(client net.Conn, hijack bool, shunt bool) error {
 		return errors.New("atyp is wrong")
 	}
 	addr, _, dest := GetAddr(atyp, buffer)
-	remote, err := net.DialTimeout("tcp", dest, 3*time.Second)
-	if err != nil {
-		if strings.Contains(err.Error(), "lookup invalid") {
-			client.Write([]byte{0x05, 0x04, 0x00, 0x01, 0, 0, 0, 0, 0, 0})
-		} else if strings.Contains(err.Error(), "network is unreachable") {
-			client.Write([]byte{0x05, 0x03, 0x00, 0x01, 0, 0, 0, 0, 0, 0})
-		} else {
-			client.Write([]byte{0x05, 0x05, 0x00, 0x01, 0, 0, 0, 0, 0, 0})
-		}
-		return err
-	}
-	remoteAddr := remote.RemoteAddr().(*net.TCPAddr)
-	remote.Close()
-	_, err = client.Write(GetReply(remoteAddr.IP, remoteAddr.Port))
-	if err != nil {
-		return err
-	}
 	if cmd < 1 || cmd > 3 {
 		client.Write([]byte{0x05, 0x07, 0x00, 0x01, 0, 0, 0, 0, 0, 0})
 		return errors.New("cmd is wrong")
 	} else if cmd == 1 {
+		remote, err := net.DialTimeout("tcp", dest, 3*time.Second)
+		if err != nil {
+			if strings.Contains(err.Error(), "lookup invalid") {
+				client.Write([]byte{0x05, 0x04, 0x00, 0x01, 0, 0, 0, 0, 0, 0})
+			} else if strings.Contains(err.Error(), "network is unreachable") {
+				client.Write([]byte{0x05, 0x03, 0x00, 0x01, 0, 0, 0, 0, 0, 0})
+			} else {
+				client.Write([]byte{0x05, 0x05, 0x00, 0x01, 0, 0, 0, 0, 0, 0})
+			}
+			return err
+		}
+		client.Write([]byte{0x05, 0x00, 0x00, 0x01, 0, 0, 0, 0, 0, 0})
 		if !shunt {
-			return HandleConnect(dest, client, hijack)
+			return HandleConnect(dest, client, remote, hijack)
 		} else {
 			shuntlist := Shunt.Shunt(addr, atyp)
 			// for i := 0; i < len(shuntlist); i++ {
 			// 	fmt.Printf("i %d %v\n", i, shuntlist[i])
 			// }
 			if shuntlist == nil {
-				return HandleConnect(dest, client, hijack)
+				return HandleConnect(dest, client, remote, hijack)
 			} else {
+				remote.Close()
 				return HandleMultiAgent(shuntlist, client, dest, atyp)
 			}
 		}
